@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PlayCanvas 高斯溅射（GSplat）阴影渲染实现 — 技术分析报告</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #79c0ff;
+    --green: #3fb950;
+    --orange: #d2991d;
+    --purple: #a371f7;
+    --red: #f85149;
+    --code-bg: #1c2128;
+    --inline-code: #e6edf3;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #1a1030 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 60px 0 48px;
+    text-align: center;
+  }
+  .hero h1 {
+    font-size: 2.4em;
+    font-weight: 700;
+    background: linear-gradient(90deg, var(--accent2), var(--purple));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+  }
+  .hero .subtitle {
+    color: var(--text2);
+    font-size: 1.05em;
+  }
+  .hero .badges {
+    margin-top: 20px;
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .badge {
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: .82em;
+    font-weight: 500;
+  }
+  .badge-wgpu { background: #1a3a5c; color: var(--accent); border: 1px solid #1f4a75; }
+  .badge-gs   { background: #1a2c1a; color: var(--green); border: 1px solid #1f4a1f; }
+  .badge-cs   { background: #2c1a2c; color: var(--purple); border: 1px solid #4a1f4a; }
+  .badge-ind  { background: #2c2610; color: var(--orange); border: 1px solid #4a3e1f; }
+
+  /* ── Container ── */
+  .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+  /* ── Section ── */
+  section { padding: 48px 0; }
+  section + section { border-top: 1px solid var(--border); }
+  h2 {
+    font-size: 1.6em;
+    font-weight: 600;
+    margin-bottom: 24px;
+    color: var(--accent2);
+  }
+  h3 {
+    font-size: 1.2em;
+    font-weight: 600;
+    margin: 28px 0 12px;
+    color: var(--text);
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+  }
+  h4 {
+    font-size: 1.02em;
+    font-weight: 600;
+    margin: 20px 0 8px;
+    color: var(--text2);
+  }
+  p { margin-bottom: 14px; }
+  ul, ol { margin: 0 0 14px 22px; }
+  li { margin-bottom: 6px; }
+  strong { color: var(--text); }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 32px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+  .arch-diagram pre {
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: .82em;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre;
+    background: transparent;
+  }
+  .arch-highlight { color: var(--accent2); }
+  .arch-dim { color: var(--text2); }
+  .arch-green { color: var(--green); }
+  .arch-purple { color: var(--purple); }
+  .arch-orange { color: var(--orange); }
+
+  /* ── Tables ── */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 16px 0 24px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .92em;
+  }
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    background: var(--surface2);
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  td { color: var(--text2); }
+  tr:last-child td { border-bottom: none; }
+  td code { font-size: .88em; }
+
+  /* ── Code ── */
+  pre.code-block {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: .82em;
+    line-height: 1.55;
+    color: var(--text);
+  }
+  pre.code-block .kw { color: #ff7b72; }
+  pre.code-block .fn { color: #d2a8ff; }
+  pre.code-block .str { color: #a5d6ff; }
+  pre.code-block .cm { color: #8b949e; font-style: italic; }
+  pre.code-block .num { color: #79c0ff; }
+  pre.code-block .op { color: #ff7b72; }
+
+  code.inline {
+    background: var(--surface2);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: .88em;
+    color: var(--inline-code);
+  }
+
+  /* ── Pipeline Steps ── */
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin: 16px 0 24px;
+  }
+  .pipe-step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .pipe-step .num {
+    font-size: .78em;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 6px;
+  }
+  .pipe-step .title {
+    font-weight: 600;
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .pipe-step .desc {
+    font-size: .88em;
+    color: var(--text2);
+    line-height: 1.5;
+  }
+
+  /* ── Callout ── */
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: #0d2847;
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin: 16px 0;
+    font-size: .92em;
+    color: #a5d6ff;
+  }
+  .callout-warn {
+    border-left-color: var(--orange);
+    background: #2c2310;
+    color: #d2a850;
+  }
+  .callout-tip {
+    border-left-color: var(--green);
+    background: #0d2818;
+    color: #7ee787;
+  }
+  .callout strong { color: inherit; }
+
+  /* ── Two-col ── */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin: 16px 0;
+  }
+  @media (max-width: 680px) { .two-col { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .card h4 { margin-top: 0; color: var(--text); }
+
+  /* ── File Index ── */
+  .file-entry {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .file-entry:last-child { border-bottom: none; }
+  .file-entry .fname {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: .86em;
+    color: var(--accent2);
+    white-space: nowrap;
+    min-width: 260px;
+  }
+  .file-entry .fdesc { font-size: .9em; color: var(--text2); }
+
+  /* ── Footer ── */
+  footer {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 28px 0;
+    text-align: center;
+    color: var(--text2);
+    font-size: .85em;
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════ HERO ════════════════════════════════════════════ -->
+<div class="hero">
+  <div class="container">
+    <h1>PlayCanvas 高斯溅射阴影渲染实现</h1>
+    <p class="subtitle">GSplat Shadow Rendering — 技术分析报告</p>
+    <div class="badges">
+      <span class="badge badge-wgpu">WebGPU Compute Shader</span>
+      <span class="badge badge-gs">3D Gaussian Splatting</span>
+      <span class="badge badge-cs">GPU-Driven Pipeline</span>
+      <span class="badge badge-ind">Indirect Draw</span>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ════════════════════════════════════════════ CH1 ════════════════════════════════════════════ -->
+<section id="architecture">
+  <h2>一、总体架构：双路径设计</h2>
+
+  <p>PlayCanvas 的高斯溅射阴影系统根据<strong>前向渲染器的排序方式</strong>自动选择不同的阴影实现策略。这一决策由 <code class="inline">GSplatDirector</code> 在配置变更时完成，通过 <code class="inline">GSplatManager</code> 的 <code class="inline">renderMode</code> 位掩码驱动。</p>
+
+  <div class="arch-diagram">
+<pre>
+  <span class="arch-dim">┌─────────────────────────────────────────────────┐</span>
+  <span class="arch-dim">│</span>              <span class="arch-highlight">GSplatDirector</span>  <span class="arch-dim">（配置决策中心）         │</span>
+  <span class="arch-dim">│</span>  renderMode = GSPLAT_FORWARD | GSPLAT_SHADOW  <span class="arch-dim">│</span>
+  <span class="arch-dim">└────────────────────┬────────────────────────────┘</span>
+                       │
+  <span class="arch-dim">┌────────────────────▼────────────────────────────┐</span>
+  <span class="arch-dim">│</span>              <span class="arch-highlight">GSplatManager</span>  <span class="arch-dim">（生命周期管理）        │</span>
+  <span class="arch-dim">│</span>  _syncShadowRenderer() 按需创建 / 销毁          <span class="arch-dim">│</span>
+  <span class="arch-dim">└────────┬──────────────────────┬─────────────────┘</span>
+           │                      │
+  <span class="arch-dim">┌────────▼──────────┐  ┌────────▼──────────────┐</span>
+  <span class="arch-dim">│</span>  <span class="arch-green">CPU Sort 路径</span>      <span class="arch-dim">│</span>  <span class="arch-dim">│</span>  <span class="arch-purple">GPU Sort 路径</span>          <span class="arch-dim">│</span>
+  <span class="arch-dim">│</span>  GSplatQuadRenderer <span class="arch-dim">│</span>  <span class="arch-dim">│</span>  GSplatHybridRenderer   <span class="arch-dim">│</span>
+  <span class="arch-dim">│</span>                      <span class="arch-dim">│</span>  <span class="arch-dim">│</span>                          <span class="arch-dim">│</span>
+  <span class="arch-dim">│</span>  ✓ 自投射阴影         <span class="arch-dim">│</span>  <span class="arch-dim">│</span>  ✗ 无法自投射              <span class="arch-dim">│</span>
+  <span class="arch-dim">│</span>  castShadow = true   <span class="arch-dim">│</span>  <span class="arch-dim">│</span>  isVisibleFunc → false     <span class="arch-dim">│</span>
+  <span class="arch-dim">│</span>  引擎标准 Shadow 管线  <span class="arch-dim">│</span>  <span class="arch-dim">│</span>                          <span class="arch-dim">│</span>
+  <span class="arch-dim">│</span>  WebGL + WebGPU       <span class="arch-dim">│</span>  <span class="arch-dim">│</span>  <span class="arch-dim">└─── 委托给 ───┐           │</span>
+  <span class="arch-dim">└────────────────────┘</span>  <span class="arch-dim">└──────────────────────┼────┘</span>
+                                               │
+                               <span class="arch-dim">┌───────────────▼───────────────┐</span>
+                               <span class="arch-dim">│</span>  <span class="arch-orange">GSplatShadowRenderer</span>          <span class="arch-dim">│</span>
+                               <span class="arch-dim">│</span>  GPU Compute Cull             <span class="arch-dim">│</span>
+                               <span class="arch-dim">│</span>  + Indirect Draw              <span class="arch-dim">│</span>
+                               <span class="arch-dim">│</span>  WebGPU Only                  <span class="arch-dim">│</span>
+                               <span class="arch-dim">└───────────────────────────────┘</span>
+</pre>
+  </div>
+
+  <h3>为什么 GPU 排序路径需要专用阴影渲染器？</h3>
+
+  <p>Hybrid 渲染器的 splat 可见性完全由<strong>GPU compute 管线</strong>决定（interval cull → projector → radix sort → indirect draw），引擎 CPU 端无法知道哪些 splat 应该投射阴影。因此 Hybrid 通过 <code class="inline">isVisibleFunc</code> <strong>明确拒绝</strong>参与引擎阴影管线：</p>
+
+  <pre class="code-block"><span class="cm">// gsplat-hybrid-renderer.js : 887–897</span>
+meshInstance.isVisibleFunc = <span class="kw">(camera) =></span> {
+    <span class="kw">if</span> (thisCamera.camera === camera && (renderMode & GSPLAT_FORWARD)) <span class="kw">return</span> <span class="num">true</span>;
+    <span class="kw">if</span> (camera.node?.name === SHADOWCAMERA_NAME) <span class="kw">return</span> <span class="num">false</span>; <span class="cm">// ← 拒绝阴影</span>
+    <span class="kw">return</span> <span class="num">false</span>;
+};</pre>
+
+  <div class="two-col">
+    <div class="card">
+      <h4>CPU Sort（Quad）路径</h4>
+      <p>meshInstance 注册为常规 shadow caster，完全走引擎标准阴影管线：culling → <code class="inline">SHADER_SHADOW</code> pass → 引擎自动注入 <code class="inline">SHADOW_PASS</code> define 编译阴影变体。</p>
+      <p style="margin-top:8px"><strong>适用范围：</strong>WebGL + WebGPU</p>
+    </div>
+    <div class="card">
+      <h4>GPU Sort（Hybrid）路径</h4>
+      <p>每个方向光维护一个轻量 <code class="inline">ShadowLightEntry</code>（独立材质 + mesh instance + buffer），通过专用 GPU compute cull 决定可见性，indirect draw 写入 shadow map。</p>
+      <p style="margin-top:8px"><strong>适用范围：</strong>仅 WebGPU</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════ CH2 ════════════════════════════════════════════ -->
+<section id="rendering-pipeline">
+  <h2>二、渲染管线：五阶段帧内流程</h2>
+
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="num">Phase 0</div>
+      <div class="title">Manager 初始化</div>
+      <div class="desc">Director 配置决策；Manager._syncShadowRenderer() 按需创建 GSplatShadowRenderer，仅 GPU-sort + GSPLAT_SHADOW 时</div>
+    </div>
+    <div class="pipe-step">
+      <div class="num">Phase 1</div>
+      <div class="title">Pre-Cull</div>
+      <div class="desc">syncLights() 调和 per-light entry 池；setCastersAabb() 设置世界空间包围盒用于 PCSS</div>
+    </div>
+    <div class="pipe-step">
+      <div class="num">Phase 2</div>
+      <div class="title">CullComposition</div>
+      <div class="desc">引擎标准流程：适配 shadow camera 视锥体，注册 caster 到 shadow map 渲染列表</div>
+    </div>
+    <div class="pipe-step">
+      <div class="num">Phase 3</div>
+      <div class="title">GPU Cull Dispatch</div>
+      <div class="desc">shadowRenderer.cull()：三 Pass GPU compute（粗裁剪 → 精细裁剪 → indirect args）</div>
+    </div>
+    <div class="pipe-step">
+      <div class="num">Phase 4</div>
+      <div class="title">Shadow Map 绘制</div>
+      <div class="desc">帧图执行 indirect draw：gsplat VS 逐顶点投影 → FS 高斯评估 → 仅写深度</div>
+    </div>
+  </div>
+
+  <h3>Phase 3 详解：三 Pass GPU 裁剪流水线</h3>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;margin:16px 0;">
+
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+      <div style="background:var(--accent);color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85em;">1</div>
+      <div>
+        <strong>Pass 1 — Interval Compaction（粗裁剪）</strong>
+        <span style="color:var(--text2);font-size:.85em;margin-left:8px;">共享 Pass，与 forward renderer 复用候选缓冲区</span>
+      </div>
+    </div>
+    <table>
+      <tr><th style="width:40%">子步骤</th><th>说明</th></tr>
+      <tr><td><strong>1a.</strong> <code class="inline">compute-gsplat-interval-cull</code></td><td>每个 interval 一个线程：读取世界空间包围球 → 变换 → 对 6 个光源视锥体平面做分离轴测试</td></tr>
+      <tr><td><strong>1b.</strong> <code class="inline">Prefix Sum</code></td><td>对 countBuffer[0..numIntervals] 做独占前缀和，计算每个存活 interval 的输出偏移</td></tr>
+      <tr><td><strong>1c.</strong> <code class="inline">compute-gsplat-interval-scatter</code></td><td>每个 interval 一个 workgroup：用前缀和偏移将存活 splat ID 压缩写入 compactedSplatIds</td></tr>
+    </table>
+    <p style="margin:12px 0 0;font-size:.86em;color:var(--text2);">输出：<code class="inline">compactedSplatIds[]</code> 密集候选列表 + <code class="inline">candidateCount</code></p>
+
+    <div style="border-top:1px solid var(--border);margin:20px 0;"></div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+      <div style="background:var(--green);color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85em;">2</div>
+      <div>
+        <strong>Pass 2 — compute-gsplat-shadow-cull（精细裁剪）</strong>
+        <span style="color:var(--text2);font-size:.85em;margin-left:8px;">平坦调度，256 线程/workgroup，ceil(N/256) workgroups</span>
+      </div>
+    </div>
+    <p>每个线程对一个候选 splat 执行 <code class="inline">fineCull(splatId)</code>，包含<strong>三个无可投影测试</strong>：</p>
+    <table>
+      <tr><th style="width:12%">测试</th><th style="width:38%">条件</th><th>说明</th></tr>
+      <tr>
+        <td><strong>① 透明度</strong></td>
+        <td><code class="inline">opacity ≤ alphaClip</code></td>
+        <td>与 forward alpha cull + shadow PS alphaClip 一致</td>
+      </tr>
+      <tr>
+        <td><strong>② 尺寸</strong></td>
+        <td><code class="inline">maxScale &lt; worldSizeThreshold</code></td>
+        <td>利用正交投影线性特性，CPU 预计算世界空间阈值，无需逐 splat 投影矩阵乘法</td>
+      </tr>
+      <tr>
+        <td><strong>③ 视锥体</strong></td>
+        <td><code class="inline">dot(plane.xyz, center) + plane.w ≤ -splatRadius</code></td>
+        <td>使用 <strong>3σ</strong> 高斯半径（保守上界），对 6 个光源视锥体平面逐面测试</td>
+      </tr>
+    </table>
+
+    <p style="margin-top:12px;font-size:.86em;">存活者通过<strong>两级原子压缩</strong>写入 per-light 的 <code class="inline">outputIndices[]</code> + <code class="inline">countBuffer</code>：workgroup 内先局部 atomicAdd → workgroup leader 一次性全局预留连续空间 → 并行写入</p>
+
+    <div style="border-top:1px solid var(--border);margin:20px 0;"></div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+      <div style="background:var(--purple);color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85em;">3</div>
+      <div>
+        <strong>Pass 3 — compute-gsplat-shadow-indirect-args</strong>
+        <span style="color:var(--text2);font-size:.85em;margin-left:8px;">单线程 compute shader</span>
+      </div>
+    </div>
+    <pre class="code-block"><span class="kw">let</span> count = countBuffer[<span class="num">0</span>];
+<span class="kw">let</span> instanceCount = (count + INSTANCE_SIZE - <span class="num">1u</span>) / INSTANCE_SIZE;
+indirectDrawArgs[drawSlot] = DrawIndexedIndirectArgs(
+    indexCount,      <span class="cm">// 固定: 6 × INSTANCE_SIZE</span>
+    instanceCount,   <span class="cm">// 由 GPU 原子计数计算出</span>
+    <span class="num">0u</span>, <span class="num">0</span>, <span class="num">0u</span>           <span class="cm">// firstIndex, baseVertex, firstInstance</span>
+);</pre>
+    <p style="font-size:.86em;color:var(--text2);">将 GPU 原子可见计数转换为 indirect draw 参数，全程不离开 GPU。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════ CH3 ════════════════════════════════════════════ -->
+<section id="shadow-map-generation">
+  <h2>三、Shadow Map 生成：直接投影高斯点</h2>
+
+  <div class="callout callout-tip">
+    <strong>关键结论：</strong>Shadow map 是直接渲染高斯点云生成的，<strong>不是 mesh 代理、不是简化几何体</strong>。使用与 forward pass 完全相同的 gsplat 四边形着色器（gsplatVS + gsplatPS），区别仅在于使用光源 view-projection 矩阵且仅输出深度。
+  </div>
+
+  <h3>绘制时的着色器路径</h3>
+
+  <pre class="code-block"><span class="cm">// gsplat-shadow-renderer.js : _createMaterial()</span>
+<span class="kw">const</span> material = <span class="kw">new</span> ShaderMaterial({
+    vertexWGSL:   <span class="str">'#include "gsplatVS"'</span>,   <span class="cm">// ← 与 forward 完全相同的 VS</span>
+    fragmentWGSL: <span class="str">'#include "gsplatPS"'</span>,   <span class="cm">// ← 与 forward 完全相同的 PS</span>
+});
+
+<span class="cm">// 引擎在编译 shadow 变体时自动注入 SHADOW_PASS define</span>
+<span class="cm">// SHADOW_PASS 下 FS 跳过颜色计算，仅输出深度</span>
+
+<span class="cm">// 使用共享 quad mesh（6 个顶点，两个三角形组成单位四边形）</span>
+<span class="kw">const</span> mesh = GSplatResourceBase.createMesh(<span class="kw">this</span>.device);</pre>
+
+  <h3>顶点着色器执行流程（Shadow Pass）</h3>
+  <ol>
+    <li>从 indirect count buffer 读取可见 splat 数量，循环实例化四边形顶点</li>
+    <li>每个实例根据 <code class="inline">outputIndices[instanceId]</code> 从 work-buffer 纹理读取 splat 的中心、旋转、缩放、不透明度</li>
+    <li>用<strong>光源的 view-projection 矩阵</strong>将 splat 中心投影到 shadow map 空间</li>
+    <li>计算 <strong>3D 高斯协方差 → 2D 屏幕空间投影 → 协方差特征分解 → 四边形角点坐标</strong></li>
+    <li>alpha 裁剪：clipCorner 收缩四边形以排除亚阈值区域</li>
+  </ol>
+
+  <h3>片段着色器执行流程（Shadow Pass）</h3>
+  <ol>
+    <li>对四边形内每个像素计算 2D 高斯分布值（指数衰减，由协方差矩阵决定）</li>
+    <li>乘以 splat 不透明度</li>
+    <li>与 <code class="inline">alphaClip</code> 阈值比较，低于阈值 discard</li>
+    <li><strong>仅写入深度</strong>（<code class="inline">SHADOW_PASS</code> define 下跳过颜色输出）</li>
+  </ol>
+
+  <div class="callout">
+    <strong>与 Forward Pass 的唯一区别：</strong>
+    <ul style="margin-bottom:0">
+      <li><strong>Forward:</strong> 相机 view-projection + 输出颜色 + alpha blend</li>
+      <li><strong>Shadow:</strong> 光源 view-projection + <strong>仅深度输出</strong>（引擎自动注入 SHADOW_PASS）</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════ CH4 ════════════════════════════════════════════ -->
+<section id="key-optimizations">
+  <h2>四、关键算法优化</h2>
+
+  <h3>① 无可投影数学（最大性能优化）</h3>
+  <p>阴影裁剪<strong>完全避免</strong>了 forward projector 最昂贵的操作 — <code class="inline">computeSplatCov</code>（3D→2D 高斯协方差投影 + 特征分解 + 屏幕空间裁剪）。</p>
+  <p><strong>原理：</strong>方向光 shadow camera 是正交投影，世界空间尺寸与投影像素尺寸成<strong>线性关系</strong>。亚像素阈值在 CPU 端预计算为世界空间阈值：</p>
+  <pre class="code-block">focal = shadowRes / orthoHeight
+t2 = minPixelSize² × 0.5 - 0.3
+worldSizeThreshold = sqrt(max(0, t2)) / focal   <span class="cm">// CPU 预计算</span></pre>
+  <p>GPU 端仅需一次 <code class="inline">max(scale.x, scale.y, scale.z)</code> 比较，无需任何矩阵乘法。</p>
+
+  <h3>② 两级原子压缩（Workgroup-Aggregated Atomics）</h3>
+  <pre class="code-block"><span class="cm">// Workgroup 内先局部竞争（256 线程 → 1 个 workgroup atomic counter）</span>
+<span class="kw">var</span>&lt;workgroup&gt; wgCount: atomic&lt;u32&gt;;
+<span class="kw">if</span> (valid) { localSlot = atomicAdd(&wgCount, <span class="num">1</span>); }
+workgroupBarrier();
+
+<span class="cm">// Workgroup leader 一次性全局预留</span>
+<span class="kw">if</span> (localIdx == <span class="num">0</span>) { wgBase = atomicAdd(&globalCount[0], atomicLoad(&wgCount)); }
+workgroupBarrier();
+
+<span class="cm">// 并行写入（无需原子操作）</span>
+<span class="kw">if</span> (valid) { outputIndices[wgBase + localSlot] = splatId; }</pre>
+  <p>将全局原子竞争从 <strong>O(N) → O(N/256)</strong>，大幅提升大规模 splat 场景吞吐量。</p>
+
+  <h3>③ 全 GPU 驻留，零 CPU 回读</h3>
+  <p>可见 splat 计数（GPU 原子操作产出）→ indirect draw buffer → GPU 直接消费绘制。CPU 完全不知道每帧画了多少 splat，消除了 GPU→CPU 同步点。</p>
+
+  <h3>④ 平坦调度（Flat Dispatch）</h3>
+  <pre class="code-block"><span class="kw">let</span> threadIdx = gid.y * (numWorkgroups.x * <span class="num">256u</span>) + gid.x;</pre>
+  <p>GPU 占用率与场景如何分割为 interval 无关——单个大 AABB 和 10K 节点的八叉树同等饱和 GPU。</p>
+
+  <h3>⑤ 候选缓冲区复用</h3>
+  <p><code class="inline">compactedSplatIds</code> 候选列表由 <code class="inline">GSplatHybridRendererScratch</code> 提供，forward renderer 和 shadow renderer 在帧内不同时间点使用（forward 先完成 → shadow 覆盖），避免重复 GPU 内存分配。</p>
+
+  <h3>⑥ 保守剔除原则</h3>
+  <p>所有剔除测试采用保守上界：尺寸使用 <code class="inline">max(scale.x, scale.y, scale.z)</code> 作为投影范围上界；视锥体使用 <strong>3σ</strong> 高斯半径（而非 1σ 中心点）。永远不会错误剔除 forward 管线会保留的 splat。</p>
+</section>
+
+<!-- ════════════════════════════════════════════ CH5 ════════════════════════════════════════════ -->
+<section id="data-structures">
+  <h2>五、核心数据结构</h2>
+
+  <h3>ShadowLightEntry（Per-Light 绘制入口）</h3>
+  <div class="table-wrap">
+  <table>
+    <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+    <tr><td><code class="inline">light</code></td><td><code class="inline">Light</code></td><td>关联的方向光</td></tr>
+    <tr><td><code class="inline">material</code></td><td><code class="inline">ShaderMaterial</code></td><td>Per-light 阴影绘制材质（gsplat VS/PS chunk，SHADOW_PASS 变体）</td></tr>
+    <tr><td><code class="inline">meshInstance</code></td><td><code class="inline">MeshInstance</code></td><td>注册为 shadow caster（castShadow=true）；isVisibleFunc 仅对 light.shadowCamera 可见</td></tr>
+    <tr><td><code class="inline">indexBuffer</code></td><td><code class="inline">StorageBuffer</code></td><td>Pass 2 输出：密集可见 splat work-buffer 索引列表（动态增长）</td></tr>
+    <tr><td><code class="inline">allocatedIndexCount</code></td><td><code class="inline">number</code></td><td>indexBuffer 当前容量（splat 数）</td></tr>
+    <tr><td><code class="inline">countBuffer</code></td><td><code class="inline">StorageBuffer</code></td><td>单元素原子计数器（4B），同时作为 numSplatsStorage 绑定到绘制材质</td></tr>
+    <tr><td><code class="inline">cullCompute</code></td><td><code class="inline">Compute</code></td><td>Per-entry 裁剪 Compute 实例（独立 uniform buffer + bind group）</td></tr>
+    <tr><td><code class="inline">cullComputeGen</code></td><td><code class="inline">number</code></td><td>代际标记；不匹配时重建</td></tr>
+    <tr><td><code class="inline">argsCompute</code></td><td><code class="inline">Compute</code></td><td>Per-entry indirect args Compute 实例</td></tr>
+  </table>
+  </div>
+
+  <div class="callout">
+    <strong>为什么每个 light 需要独立的 Compute 实例？</strong><br>
+    多个 light 共享同一个 Shader 对象（代码相同），但若共用 Compute 实例（同一 uniform buffer），后续 light 的 dispatch 会覆盖前一个的 frustum planes / draw slot。Per-light Compute 实例隔离了 uniform buffer + bind group。
+  </div>
+
+  <h3>Pass 2 Cull 的 Uniform 布局</h3>
+  <div class="table-wrap">
+  <table>
+    <tr><th>字段</th><th>WGSL 类型</th><th>说明</th></tr>
+    <tr><td><code class="inline">frustumPlanes</code></td><td><code class="inline">array&lt;vec4f, 6&gt;</code></td><td>光源视锥体 6 平面 (normal.xyz, distance)</td></tr>
+    <tr><td><code class="inline">numIntervals</code></td><td><code class="inline">u32</code></td><td>Interval 总数</td></tr>
+    <tr><td><code class="inline">splatTextureSize</code></td><td><code class="inline">u32</code></td><td>Work-buffer 纹理尺寸</td></tr>
+    <tr><td><code class="inline">alphaClip</code></td><td><code class="inline">f32</code></td><td>Alpha 裁剪阈值</td></tr>
+    <tr><td><code class="inline">worldSizeThreshold</code></td><td><code class="inline">f32</code></td><td>世界空间亚像素阈值（CPU 预计算）</td></tr>
+  </table>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════ CH6 ════════════════════════════════════════════ -->
+<section id="file-index">
+  <h2>六、核心文件索引</h2>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;">
+    <div class="file-entry">
+      <span class="fname">src/scene/gsplat-unified/<br>gsplat-shadow-renderer.js</span>
+      <span class="fdesc"><strong>847 行</strong> — CPU 侧阴影调度器：per-light entry 生命周期管理、灯光池调和、三 Pass GPU cull dispatch、shader 构建与变更检测</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/shader-lib/wgsl/chunks/gsplat/<br>compute-gsplat-shadow-cull.js</span>
+      <span class="fdesc"><strong>142 行</strong> — Pass 2 精细 per-splat 裁剪 WGSL 着色器：fineCull() 三个无可投影测试 + 两级原子压缩输出</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/shader-lib/wgsl/chunks/gsplat/<br>compute-gsplat-shadow-indirect-args.js</span>
+      <span class="fdesc"><strong>43 行</strong> — Pass 3 单线程 compute shader：将 GPU 原子计数转换为 indirect draw 参数</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/gsplat-unified/<br>gsplat-interval-compaction.js</span>
+      <span class="fdesc"><strong>~300 行</strong> — Pass 1 interval 级粗裁剪 + 前缀和 + 散射压缩（与 forward renderer 共享）</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/gsplat-unified/<br>gsplat-director.js</span>
+      <span class="fdesc"><strong>~126 行</strong> — 配置决策中心：比较 placements vs shadowCasters，决定 renderMode 位掩码</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/gsplat-unified/<br>gsplat-manager.js</span>
+      <span class="fdesc"><strong>~500 行</strong> — renderMode 生命周期管理：_syncShadowRenderer() 创建/销毁，updateShadows() 入口</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/gsplat-unified/<br>gsplat-hybrid-renderer.js</span>
+      <span class="fdesc"><strong>903 行</strong> — GPU 排序前向渲染器：isVisibleFunc 明确拒绝参与阴影绘制</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/shader-lib/wgsl/chunks/gsplat/<br>compute-gsplat-interval-cull.js</span>
+      <span class="fdesc">Pass 1a：每个 interval 的包围球对光源视锥体做分离轴测试</span>
+    </div>
+    <div class="file-entry">
+      <span class="fname">src/scene/shader-lib/wgsl/chunks/gsplat/<br>compute-gsplat-interval-scatter.js</span>
+      <span class="fdesc">Pass 1c：将存活 interval 的 splat ID 按前缀和偏移压缩到候选列表</span>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════ CH7 ════════════════════════════════════════════ -->
+<section id="limitations">
+  <h2>七、当前限制与待扩展方向</h2>
+
+  <div class="two-col">
+    <div class="card" style="border-left:3px solid var(--red);">
+      <h4>⚠️ 当前限制</h4>
+      <ul style="margin-bottom:0">
+        <li><strong>仅方向光</strong> — 不支持点光源（需 6-face cubemap shadow map）和聚光灯</li>
+        <li><strong>仅非级联方向光</strong>（<code class="inline">numCascades === 1</code>）— 级联阴影不支持</li>
+        <li><strong>仅 WebGPU</strong> — 依赖 compute shader；WebGL 走 CPU sort 自投射路径</li>
+        <li><strong>Hybrid 依赖 interval 结构</strong> — 世界空间包围盒需 CPU 端生成</li>
+      </ul>
+    </div>
+    <div class="card" style="border-left:3px solid var(--green);">
+      <h4>🔮 潜在扩展方向</h4>
+      <ul style="margin-bottom:0">
+        <li>支持级联方向光阴影（per-cascade cull）</li>
+        <li>支持点光源（per-face cull → 6 次 Pass 1+2 → layered indirect draw）</li>
+        <li>Cull shader 合并 <code class="inline">fineCull</code> 的 3 个测试到一个早期退出分支</li>
+        <li>Workgroup 共享内存缓存 splat 数据以减少纹理采样延迟</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════ CH8 ════════════════════════════════════════════ -->
+<section id="code-reference">
+  <h2>八、关键代码位置速查</h2>
+
+  <div class="table-wrap">
+  <table>
+    <tr><th style="width:42%">位置</th><th>说明</th></tr>
+    <tr><td><code class="inline">gsplat-shadow-renderer.js:397–427</code></td><td><code class="inline">syncLights()</code> 灯光池调和</td></tr>
+    <tr><td><code class="inline">gsplat-shadow-renderer.js:437–472</code></td><td><code class="inline">cull()</code> 总调度入口</td></tr>
+    <tr><td><code class="inline">gsplat-shadow-renderer.js:534–662</code></td><td><code class="inline">_cullEntry()</code> 完整三 Pass 流水线</td></tr>
+    <tr><td><code class="inline">gsplat-shadow-renderer.js:269–326</code></td><td><code class="inline">_buildCullShader()</code> Cull shader 构建与 includes 组装</td></tr>
+    <tr><td><code class="inline">gsplat-shadow-renderer.js:689–724</code></td><td><code class="inline">_createEntry()</code> Per-light 绘制入口创建</td></tr>
+    <tr><td><code class="inline">gsplat-shadow-renderer.js:752–778</code></td><td><code class="inline">_createMaterial()</code> 阴影材质创建（gsplatVS + gsplatPS）</td></tr>
+    <tr><td><code class="inline">compute-gsplat-shadow-cull.js:56–96</code></td><td><code class="inline">fineCull()</code> 三个无可投影测试</td></tr>
+    <tr><td><code class="inline">compute-gsplat-shadow-cull.js:98–139</code></td><td>两级原子压缩输出逻辑</td></tr>
+    <tr><td><code class="inline">compute-gsplat-shadow-indirect-args.js:28–38</code></td><td>Indirect draw 参数计算</td></tr>
+    <tr><td><code class="inline">gsplat-manager.js:446–452</code></td><td><code class="inline">_syncShadowRenderer()</code> 创建/销毁决策</td></tr>
+    <tr><td><code class="inline">gsplat-manager.js:771–773</code></td><td><code class="inline">updateShadows()</code> 入口</td></tr>
+    <tr><td><code class="inline">gsplat-hybrid-renderer.js:887–897</code></td><td><code class="inline">isVisibleFunc</code> 明确拒绝阴影</td></tr>
+  </table>
+  </div>
+</section>
+
+</div><!-- /container -->
+
+<footer>
+  <div class="container">
+    <p>PlayCanvas GSplat Shadow Rendering — Technical Analysis &nbsp;|&nbsp; 2026-07-09</p>
+    <p style="margin-top:4px">基于 <a href="https://github.com/playcanvas/engine" style="color:var(--accent)">playcanvas/engine</a> 源码分析</p>
+  </div>
+</footer>
+
+</body>
+</html>
